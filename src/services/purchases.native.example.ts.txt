@@ -1,0 +1,56 @@
+/**
+ * BEISPIEL (wird nicht gebaut): RevenueCat in der nativen App anmelden.
+ *
+ *   npm i @revenuecat/purchases-capacitor && npx cap sync
+ *   Datei in `purchases.native.ts` umbenennen und einmal in src/main.tsx importieren:  import './services/purchases.native';
+ *
+ * In RevenueCat: Produkte "spotdrive_pro_monthly" / "spotdrive_pro_yearly" (aus App Store Connect / Google Play Console)
+ * zu einem Entitlement "pro" und einem Offering "default" mit den Paketen $rc_monthly und $rc_annual verbinden;
+ * Webhook → https://DEIN-SERVER/api/billing/webhook/revenuecat mit Authorization = REVENUECAT_WEBHOOK_AUTH.
+ * Der RevenueCat *öffentliche* SDK-Key (appl_… / goog_…) darf in der App stehen (VITE_REVENUECAT_KEY).
+ */
+import { Purchases } from '@revenuecat/purchases-capacitor';
+import { registerNativePurchases, type BillingPlan } from './billing';
+
+const PKG: Record<BillingPlan, string> = { monthly: '$rc_monthly', yearly: '$rc_annual' };
+let configured = false;
+const ensure = async () => {
+  if (configured) return;
+  await Purchases.configure({ apiKey: import.meta.env.VITE_REVENUECAT_KEY as string });
+  configured = true;
+};
+
+registerNativePurchases({
+  async logIn(id) {
+    await ensure();
+    await Purchases.logIn({ appUserID: id });
+  },
+  async prices() {
+    await ensure();
+    const { current } = await Purchases.getOfferings();
+    const out: Partial<Record<BillingPlan, string>> = {};
+    for (const plan of ['monthly', 'yearly'] as BillingPlan[]) {
+      const p = current?.availablePackages.find((x) => x.identifier === PKG[plan]);
+      if (p) out[plan] = p.product.priceString;
+    }
+    return out;
+  },
+  async purchase(plan) {
+    await ensure();
+    const { current } = await Purchases.getOfferings();
+    const aPackage = current?.availablePackages.find((x) => x.identifier === PKG[plan]);
+    if (!aPackage) throw new Error('Paket nicht gefunden');
+    try {
+      const { customerInfo } = await Purchases.purchasePackage({ aPackage });
+      return { active: !!customerInfo.entitlements.active['pro'] };
+    } catch (e) {
+      if ((e as { userCancelled?: boolean }).userCancelled) return { active: false, cancelled: true };
+      throw e;
+    }
+  },
+  async restore() {
+    await ensure();
+    const { customerInfo } = await Purchases.restorePurchases();
+    return { active: !!customerInfo.entitlements.active['pro'] };
+  },
+});
